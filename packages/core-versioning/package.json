@@ -1,0 +1,11 @@
+{
+  "name": "@gym/core-versioning",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "scripts": {
+    "test": "node --experimental-transform-types test/diskBlobStore.smoke.ts && node --experimental-transform-types test/manifestStore.smoke.ts && node --experimental-transform-types test/merge.smoke.ts && node --experimental-transform-types test/codecs.smoke.ts"
+  }
+}
