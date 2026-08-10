@@ -34,7 +34,7 @@ export const ties: MergeStrategy = {
     }
     const base = options.base;
     const lambda = options.lambda ?? 1;
-    const trimFraction = options.trimFraction ?? 0.2;
+    const trimFraction = options.trimFraction ?? 0.5;
 
     assertCompatible([base, ...models.map((m) => m.weights)]);
 
