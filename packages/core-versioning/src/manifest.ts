@@ -14,6 +14,8 @@ export interface ManifestMetadata {
   datasetRef?: string;
   timestamp: string;
   metric?: number;
+  /** Number of training examples this branch trained on, for confidence-weighted merging. */
+  datasetSize?: number;
   /** Set when this manifest is a merge commit — which strategy produced it. */
   mergeStrategy?: string;
   /**

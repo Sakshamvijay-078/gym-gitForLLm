@@ -59,6 +59,14 @@ or any merge strategy changes.
   - `slerp.ts` — spherical interpolation between exactly two models;
     preserves weight norm better than a straight line through weight
     space.
+  - `confidenceWeighted.ts` — decides how much each branch counts based
+    on ITS OWN training signals (dataset size, validation metric, a
+    manual per-dataset-type trust multiplier) instead of treating every
+    branch equally. Adapts its own behavior: with no `base` it's a
+    confidence-weighted average; with a `base` it's confidence-weighted
+    TIES, where a branch with more/better data can win a sign conflict
+    even against a branch with a locally larger raw delta. Falls back
+    to plain equal weighting when no branch info is supplied.
 
 ## Formats NOT supported yet, and why
 
@@ -86,7 +94,8 @@ set up for that NodeNext convention).
 npm test
 ```
 
-Runs four suites: blob store (9 checks), manifest lineage (17 checks),
-merge math (17 checks, verified against hand-computable examples), and
-codecs (18 checks, including a byte-level safetensors round-trip and a
-hand-built F16 fixture).
+Runs five suites: blob store (9 checks), manifest lineage (17 checks),
+merge math (17 checks, verified against hand-computable examples), codecs
+(18 checks, including a byte-level safetensors round-trip and a hand-built
+F16 fixture), and confidence-weighted merging (8 checks, including a case
+where confidence LITERALLY FLIPS the elected sign vs plain TIES).

@@ -19,5 +19,5 @@ export { jsonCodec } from "./codecs/json.ts";
 export { safetensorsCodec } from "./codecs/safetensors.ts";
 export { getCodecByFormat, getCodecByExtension, listFormats } from "./codecs/registry.ts";
 
-export type { WeightedModel, MergeOptions, MergeStrategy } from "./merge/types.ts";
+export type { WeightedModel, BranchInfo, MergeOptions, MergeStrategy } from "./merge/types.ts";
 export { getMergeStrategy, listMergeStrategies } from "./merge/registry.ts";

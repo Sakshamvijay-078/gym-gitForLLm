@@ -38,7 +38,7 @@ function baseWeights(w: Record<string, number[]>): ModelWeights {
 
 function main() {
   // --- Registry ---
-  assert(listMergeStrategies().sort().join(",") === "average,slerp,task-arithmetic,ties", "registry lists all four strategies");
+  assert(listMergeStrategies().sort().join(",") === "average,confidence-weighted,slerp,task-arithmetic,ties", "registry lists all five strategies");
   assert(getMergeStrategy("average").name === "average", "getMergeStrategy() resolves a known strategy by name");
   let threwUnknown = false;
   try {

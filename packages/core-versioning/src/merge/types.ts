@@ -2,21 +2,46 @@ import type { ModelWeights } from "../model.ts";
 export type { ModelWeights, Tensor, DType } from "../model.ts";
 export { makeTensorLike } from "../model.ts";
 
+/**
+ * Signals used to decide how much a branch's weights should count in a
+ * merge. Absent fields fall back to neutral defaults — a strategy that
+ * uses this should degrade gracefully (to equal weighting) when nothing
+ * is known about a branch, not error out.
+ */
+export interface BranchInfo {
+  /** Number of training examples this branch trained on. */
+  datasetSize?: number;
+  /** A validation score for this branch, higher = better, any consistent scale. */
+  validationMetric?: number;
+  /** Free-form label for what kind of data this branch trained on — not a magnitude, used only via typeTrust. */
+  datasetType?: string;
+}
+
 export interface WeightedModel {
   /** The manifest hash this model's weights came from. */
   hash: string;
   weights: ModelWeights;
+  /** Optional — only read by confidence-aware strategies. */
+  info?: BranchInfo;
 }
 
 export interface MergeOptions {
   /** Common ancestor weights — required by task-arithmetic and TIES. */
   base?: ModelWeights;
-  /** Global scale applied to the combined task vector (task-arithmetic, TIES). Default varies by strategy. */
+  /** Global scale applied to the combined task vector (task-arithmetic, TIES, confidence-weighted). Default varies by strategy. */
   lambda?: number;
-  /** Fraction of each task vector's parameters to keep by magnitude (TIES). Default 0.2. */
+  /** Fraction of each task vector's parameters to keep by magnitude (TIES, confidence-weighted). Default 0.2. */
   trimFraction?: number;
   /** Interpolation factor between the two models, 0..1 (SLERP). Default 0.5. */
   t?: number;
+
+  // --- confidence-weighted strategy options ---
+  /** How strongly dataset size influences confidence, as an exponent on its normalized share. 0 disables it, 1 (default) is proportional, >1 sharpens it. */
+  sizeWeight?: number;
+  /** Same, for validationMetric. */
+  metricWeight?: number;
+  /** Manual trust multiplier per datasetType label, e.g. {"clean-labels": 2, "noisy-scrape": 0.5}. Missing types default to 1 (neutral). */
+  typeTrust?: Record<string, number>;
 }
 
 export interface MergeStrategy {

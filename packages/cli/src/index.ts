@@ -54,13 +54,14 @@ ${color.bold("gym")} — git for LLMs
 
 ${color.bold("Usage")}
   gym init                                       start a new store in this directory
-  gym commit --file <path> --node <id> --round <n> [--parent <hash>] [--format <name>]
+  gym commit --file <path> --node <id> --round <n> [--parent <hash>] [--format <name>] [--dataset-size <n>] [--metric <n>]
                                                   commit a checkpoint/adapter
   gym log [<hash>]                               show lineage, defaults to HEAD
   gym checkout <hash> --out <path>                pull a checkpoint's bytes back out
   gym merge <hashA> <hashB> --strategy <name> --node <id> --round <n> --out <path>
                                                   combine two branches into one
-                                                  [--base <hash>] [--lambda <n>] [--trim <fraction>] [--t <fraction>] [--format <name>]
+                                                  [--base <hash>|auto] [--lambda <n>] [--trim <fraction>] [--t <fraction>] [--format <name>]
+                                                  [--size-weight <n>] [--metric-weight <n>] [--type-trust '{"type":n}']  (confidence-weighted)
   gym status                                      show current store + refs
   gym strategies                                  list available merge strategies
   gym formats                                     list available model codecs
@@ -121,6 +122,8 @@ async function cmdCommit(flags: Record<string, string>) {
       round: Number(round),
       timestamp: new Date().toISOString(),
       datasetRef: flags.dataset,
+      datasetSize: flags["dataset-size"] !== undefined ? Number(flags["dataset-size"]) : undefined,
+      metric: flags.metric !== undefined ? Number(flags.metric) : undefined,
       format,
     },
     validationStatus,
@@ -203,7 +206,12 @@ async function loadWeightedModel(
   const codec = getCodecByFormat(entry.metadata.format);
   const bytes = await blobStore.get(entry.shards[0].hash);
   const weights = codec.decode(bytes);
-  return { hash, model: { hash, weights }, format: entry.metadata.format };
+  const info = {
+    datasetSize: entry.metadata.datasetSize,
+    validationMetric: entry.metadata.metric,
+    datasetType: entry.metadata.datasetRef,
+  };
+  return { hash, model: { hash, weights, info }, format: entry.metadata.format };
 }
 
 async function cmdMerge(positional: string[], flags: Record<string, string>) {
@@ -226,8 +234,12 @@ async function cmdMerge(positional: string[], flags: Record<string, string>) {
   const { hash: hashB, model: modelB, format: formatB } = await loadWeightedModel(manifestStore, blobStore, hashBInput);
 
   let base;
-  if (strategy.requiresBase) {
-    let baseHash = flags.base;
+  // Load a base if the strategy requires one, or if the user opted in
+  // explicitly with --base <hash> or --base auto (for optional-base
+  // strategies like confidence-weighted, whose TIES-style mode only
+  // activates when a base is present).
+  if (strategy.requiresBase || flags.base) {
+    let baseHash = flags.base === "auto" ? undefined : flags.base;
     if (!baseHash) {
       const auto = await manifestStore.commonAncestor(hashA, hashB);
       if (!auto) {
@@ -247,6 +259,9 @@ async function cmdMerge(positional: string[], flags: Record<string, string>) {
     lambda: flags.lambda !== undefined ? Number(flags.lambda) : undefined,
     trimFraction: flags.trim !== undefined ? Number(flags.trim) : undefined,
     t: flags.t !== undefined ? Number(flags.t) : undefined,
+    sizeWeight: flags["size-weight"] !== undefined ? Number(flags["size-weight"]) : undefined,
+    metricWeight: flags["metric-weight"] !== undefined ? Number(flags["metric-weight"]) : undefined,
+    typeTrust: flags["type-trust"] !== undefined ? JSON.parse(flags["type-trust"]) : undefined,
   };
 
   const mergedWeights = strategy.merge([modelA, modelB], options);

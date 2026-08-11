@@ -3,6 +3,7 @@ import { average } from "./strategies/average.ts";
 import { taskArithmetic } from "./strategies/taskArithmetic.ts";
 import { ties } from "./strategies/ties.ts";
 import { slerp } from "./strategies/slerp.ts";
+import { confidenceWeighted } from "./strategies/confidenceWeighted.ts";
 
 /**
  * Plug-and-play registry. Adding a new merge technique means writing one
@@ -16,6 +17,7 @@ const strategies: Record<string, MergeStrategy> = {
   [taskArithmetic.name]: taskArithmetic,
   [ties.name]: ties,
   [slerp.name]: slerp,
+  [confidenceWeighted.name]: confidenceWeighted,
 };
 
 export function getMergeStrategy(name: string): MergeStrategy {

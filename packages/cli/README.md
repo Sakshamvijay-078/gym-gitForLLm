@@ -29,11 +29,20 @@ gym help
   you try to merge it.
 - Any `<hash>` argument accepts a short prefix, resolved the way
   `git rev-parse` resolves an abbreviated SHA — throws if it's ambiguous.
+- `commit` also accepts `--dataset-size <n>` and `--metric <n>` to tag a
+  branch with confidence-weighting signals — free once tagged, since
+  `merge` reads them straight off the manifest, no extra flags needed at
+  merge time.
 - `merge` needs both branches to have a recognized format. `--base` is
-  optional for task-arithmetic/ties: if omitted, it's auto-detected as
-  the nearest common ancestor of the two branches (`git merge-base`).
-  Output format defaults to the input format if both branches match, or
-  can be set explicitly with `--format`.
+  optional for task-arithmetic/ties (required) and confidence-weighted
+  (optional): pass `--base <hash>` or `--base auto` (auto-detects the
+  nearest common ancestor, `git merge-base`-style) to activate
+  confidence-weighted's TIES-style mode; omit it entirely for its plain
+  confidence-weighted-average mode.
+- `confidence-weighted` also accepts `--size-weight <n>`, `--metric-weight
+  <n>` (0 disables that signal, 1 is proportional, >1 sharpens it), and
+  `--type-trust '{"type-label": n}'` for a manual per-dataset-type trust
+  multiplier.
 - `checkout`/`merge` only support single-shard manifests today —
   multi-shard reassembly comes later, when checkpoints actually need
   sharding.
@@ -54,6 +63,7 @@ gym help
 | `task-arithmetic` | yes | 1+ | `base + λ·Σ(model − base)`. `λ` defaults to `1/n` (equal to averaging); push it away from `1/n` to weight branches differently. |
 | `ties` | yes | 2+ | Trims each task vector to its top-k magnitude entries, elects a sign per parameter by majority magnitude, averages only the agreeing values. Resolves sign conflicts averaging silently erases. |
 | `slerp` | no | exactly 2 | Interpolates along the arc between two weight vectors instead of a straight line — better preserves weight norm than linear blending. `--t` in `[0,1]`, default `0.5`. |
+| `confidence-weighted` | optional | 2+ | Weights each branch by ITS OWN training signals (dataset size, validation metric, dataset-type trust) instead of treating every branch equally. No `--base`: confidence-weighted average. With `--base`: confidence-weighted TIES — a branch with more/better data can outvote a branch with a locally larger raw delta. Falls back to plain equal weighting with no branch info. |
 
 All four are just `MergeStrategy` implementations registered in
 `core-versioning/src/merge/registry.ts` — adding a new technique means
