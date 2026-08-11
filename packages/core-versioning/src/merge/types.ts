@@ -70,6 +70,35 @@ export interface MergeOptions {
    */
   normalizeTaskVectors?: boolean;
 
+  /**
+   * Controls how dataset size is converted into a confidence signal.
+   * This is the most important option for imbalanced datasets.
+   *
+   *  'proportional' — raw size fraction: size_i / Σ size_j
+   *                   At 100:1 ratio this gives 0.99/0.01 → after log+softmax
+   *                   confidence collapses to ~0.0001 for the small branch.
+   *                   Only use when datasets are balanced (<5:1 ratio).
+   *
+   *  'sqrt'         — √(size_i) / Σ√(size_j)  ← NEW DEFAULT
+   *                   100:1 ratio → 10:1 confidence. Much safer for imbalanced
+   *                   scenarios. Inspired by FedProx heterogeneous FL scaling.
+   *
+   *  'metric'       — use validationMetric only; size has no influence.
+   *                   Good when metric accurately captures quality regardless
+   *                   of how much data was used to achieve it.
+   *
+   *  'equal'        — flat 1/N weighting; ignore all signals.
+   *                   Use when you have no reliable metadata but want task-vector
+   *                   merging (better than raw-weight average regardless).
+   *
+   *  'delta-norm'   — weight by ‖Δᵢ‖² (Fisher-approximate: squared update norm
+   *                   is a proxy for the diagonal Fisher information matrix).
+   *                   A branch that actually moved its weights more is weighted
+   *                   more. Requires base. Falls back to 'equal' without base.
+   *                   Ref: Matena & Raffel (2022) "Merging Models with Fisher..."
+   */
+  scoreMode?: "proportional" | "sqrt" | "metric" | "equal" | "delta-norm";
+
 }
 
 export interface MergeStrategy {

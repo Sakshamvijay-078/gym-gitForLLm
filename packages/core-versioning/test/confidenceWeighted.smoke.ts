@@ -39,12 +39,34 @@ function main() {
   const noInfoResult = confidenceWeighted.merge([plainA, plainB], {});
   assert(approxEqual(noInfoResult.w.data, [2, 3, 4]), "with no branch info at all, confidence-weighted falls back to plain averaging");
 
-  // --- Dataset size drives the weighting proportionally (metric disabled via metricWeight: 0) ---
+  // --- Dataset size drives the weighting proportionally when scoreMode='proportional' ---
   const bigBranch = model("big", { w: [10, 10] }, { datasetSize: 300 });
   const smallBranch = model("small", { w: [0, 0] }, { datasetSize: 100 });
-  // 300:100 -> confidence 0.75 : 0.25 -> weighted mean = 0.75*10 + 0.25*0 = 7.5
-  const sizeResult = confidenceWeighted.merge([bigBranch, smallBranch], { metricWeight: 0 });
-  assert(approxEqual(sizeResult.w.data, [7.5, 7.5]), "dataset size proportionally weights the merge (300 vs 100 examples -> 75/25 split)");
+  // 300:100 -> proportional: confidence 0.75 : 0.25 -> weighted mean = 0.75*10 + 0.25*0 = 7.5
+  const sizeResult = confidenceWeighted.merge([bigBranch, smallBranch], { metricWeight: 0, scoreMode: "proportional" });
+  assert(approxEqual(sizeResult.w.data, [7.5, 7.5]), "dataset size proportionally weights the merge (300 vs 100 examples -> 75/25 split) when scoreMode=proportional");
+
+  // --- sqrt mode (new default): 100:1 ratio does NOT collapse to near-zero confidence ---
+  // With datasetSize 30000 vs 300 (100:1 imbalance ratio, like real Split-MNIST experiment):
+  //   proportional: confidence_B = 300/30300 = 0.0099 (collapses to near-zero!)
+  //   sqrt:         confidence_B = sqrt(300)/(sqrt(30000)+sqrt(300)) = 17.32/190.71 = 0.091
+  // The sqrt mode ensures the small branch has at least ~9% influence, not 1%.
+  const hugeBranch = model("huge", { w: [10, 10] }, { datasetSize: 30000 });
+  const tinyBranch = model("tiny", { w: [0, 0] }, { datasetSize: 300 });
+  // With proportional: result ≈ [9.9, 9.9] (B contributes 1%)
+  // With sqrt (default): B should contribute ~9% -> result should be meaningfully < 9.9
+  const sqrtResult = confidenceWeighted.merge([hugeBranch, tinyBranch], { metricWeight: 0 });
+  const propResult = confidenceWeighted.merge([hugeBranch, tinyBranch], { metricWeight: 0, scoreMode: "proportional" });
+  // sqrt result gives B more voice: sqrtResult[0] < propResult[0] (B pulls toward 0 more)
+  assert(
+    sqrtResult.w.data[0] < propResult.w.data[0],
+    "sqrt scoreMode gives the small branch (100:1 ratio) more influence than proportional — prevents confidence collapse",
+  );
+  // Also verify the proportional mode collapses to near-zero (the bug we fixed):
+  assert(
+    propResult.w.data[0] > 9.8,
+    "proportional mode correctly collapses small branch to near-zero influence at 100:1 ratio (the v2 bug, preserved for documentation)",
+  );
 
   // --- Validation metric drives the weighting proportionally (size disabled via sizeWeight: 0) ---
   const goodBranch = model("good", { w: [1, 1] }, { validationMetric: 0.9 });
@@ -82,18 +104,44 @@ function main() {
   );
   assert(approxEqual(plainTiesResult.w.data, [5, 2]), "sanity check: plain ties on this fixture gives [5,2] (positive sign wins on raw magnitude)");
 
-  const cwTiesResult = confidenceWeighted.merge([lowConfidenceA, highConfidenceB], {
-    base: tiesBase,
+  // With scoreMode='proportional': datasetSize 10:90 gives confidence 0.1:0.9
+  // position 0: positiveMass=0.1*5=0.5, negativeMass=0.9*1=0.9 -> NEGATIVE wins (flipped!)
+  // With scoreMode='sqrt' (default): sqrt(10)/(sqrt(10)+sqrt(90))=0.25, confidence 0.25:0.75
+  // position 0: positiveMass=0.25*5=1.25, negativeMass=0.75*1=0.75 -> positive still wins (no flip at this ratio)
+  // To flip with sqrt, need even stronger confidence imbalance: use 1:99 dataset sizes
+  const tiesBase2 = baseWeights({ w: [0, 0] });
+  const lowConfA_prop = model("a", { w: [5, 1] }, { datasetSize: 10 });
+  const highConfB_prop = model("b", { w: [-1, 3] }, { datasetSize: 90 });
+  const cwTiesResult = confidenceWeighted.merge([lowConfA_prop, highConfB_prop], {
+    base: tiesBase2,
     trimFraction: 1,
     lambda: 1,
     metricWeight: 0,
+    scoreMode: "proportional", // explicitly use proportional to get 10%/90% confidence
   });
   // position 0: positive mass = 0.1*5 = 0.5, negative mass = 0.9*1 = 0.9 -> NEGATIVE wins (flipped from plain ties!)
   //   only B agrees with elected sign -> merged[0] = B's value = -1
   // position 1: both positive, weighted mean = (0.1*1 + 0.9*3)/(0.1+0.9) = 2.8
   assert(
     approxEqual(cwTiesResult.w.data, [-1, 2.8]),
-    "confidence-weighted ties FLIPS the elected sign vs plain ties when the low-magnitude branch has much higher confidence — this is the whole point of the strategy",
+    "confidence-weighted ties FLIPS the elected sign vs plain ties when the low-magnitude branch has much higher confidence (scoreMode=proportional) — this is the whole point of the strategy",
+  );
+
+  // --- sqrt mode: verify sign-flip still works for extreme enough imbalance (1:999 ratio) ---
+  // sqrt(1)/(sqrt(1)+sqrt(999)) = 1/32.6 = 0.031 confidence for A
+  // position 0: positiveMass=0.031*5=0.155, negativeMass=0.969*1=0.969 -> NEGATIVE wins even with sqrt!
+  const veryLowA = model("a", { w: [5, 1] }, { datasetSize: 1 });
+  const veryHighB = model("b", { w: [-1, 3] }, { datasetSize: 999 });
+  const cwTiesSqrtResult = confidenceWeighted.merge([veryLowA, veryHighB], {
+    base: tiesBase2,
+    trimFraction: 1,
+    lambda: 1,
+    metricWeight: 0,
+    // default scoreMode = 'sqrt'
+  });
+  assert(
+    cwTiesSqrtResult.w.data[0] < 0,
+    "confidence-weighted ties still flips sign with sqrt scoreMode when imbalance is extreme enough (1:999 ratio)",
   );
 
   // --- Equal confidence reduces exactly to plain ties (backward-compatibility check) ---

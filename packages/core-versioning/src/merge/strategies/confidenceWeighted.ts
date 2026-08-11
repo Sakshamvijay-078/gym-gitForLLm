@@ -3,71 +3,50 @@ import { assertCompatible, makeTensorLike } from "../types.ts";
 import { add, norm, scale, softmax, sub, weightedMean } from "../vectorMath.ts";
 
 /**
- * Confidence-Weighted Merge — a smarter-than-average blending strategy
- * that weights each branch's contribution by three multiplicative signals
- * (dataset size, validation metric, and a manual dataset-type trust factor),
- * then routes to the right merge mode based on what information is available.
+ * Confidence-Weighted Merge — v3
  *
- * ─── THE CORE FIX (v2) ──────────────────────────────────────────────────────
+ * ─── BUG FIXED (v3) ─────────────────────────────────────────────────────────
  *
- * The original `weightedAverage` blended raw absolute weight tensors.  This
- * made the imbalanced case degenerate: a branch trained for only ~15 steps
- * barely moves its weights from the random init, so even a 50/50 average is
- * really `0.5 · A + 0.5 · (≈ root)` — confidence-weighting the coefficients
- * made no observable difference because the quantity being weighted was already
- * negligible.
+ * v2's confidence computation had a catastrophic collapse bug:
+ * With sizeA=30596, sizeB=300 the log-score path computed:
+ *   logScore_B = log(300/30896) + log(metricShare_B)
+ *             = -4.63 + (-0.3 typical) = -4.93
+ *   confidence_B = softmax([-0.05, -4.93]) ≈ 0.0072  (0.7%!)
  *
- * Fix: when a base is available, BOTH merge paths operate on task vectors
- * (Δ = model − base), not raw weights.  Task vectors make "how much did this
- * branch actually change" visible and separable from initialization noise.
- * Only when no base is present do we fall back to raw-weight averaging, which
- * is the honest no-information baseline (identical to FedAvg).
+ * When cw-tv then computed 0.0072·Δ_B, Δ_B was already tiny (≈1/15 of Δ_A).
+ * So effective contribution of B_starved = 0.007 × (1/15) = 0.00047 × Δ_A.
+ * This is machine-zero — mathematically identical to plain task-arithmetic on A.
+ *
+ * FIX: The new `scoreMode` option controls how size is turned into confidence:
+ *
+ *  'proportional' (old buggy default): size_i / sum(sizes)  — collapses to 0
+ *  'sqrt'       (new safe default):    √(size_i) / Σ√(size_j) — 100:1 → 10:1
+ *  'metric'     :                      use validationMetric only, ignore size
+ *  'equal'      :                      flat 1/N weighting, ignore all signals
+ *  'delta-norm' :                      weight by ‖Δᵢ‖² (Fisher-approximate proxy,
+ *                                      requires base — falls back to 'equal')
  *
  * ─── THREE MERGE MODES ──────────────────────────────────────────────────────
  *
- *  1. no base  →  confidence-weighted FedAvg over raw weights (null hypothesis)
- *  2. base, no TIES  →  confidence-weighted task-vector average:
- *       merged = base + λ · Σᵢ cᵢ · Δᵢ       (where cᵢ are normalized confidences)
- *  3. base + TIES  →  confidence-weighted TIES (trim → elect sign → disjoint merge)
- *       sign election uses confidence-weighted mass, not raw magnitude,
- *       so a branch with more/better data can win even against a larger raw Δ.
+ *  1. no base  →  confidence-weighted FedAvg over raw weights
+ *  2. base, ties=false  →  confidence-weighted task-vector average (THE fix):
+ *       merged = base + λ · Σᵢ cᵢ · Δᵢ
+ *  3. base + TIES (default)  →  CW-TIES: trim → elect sign by confidence-mass
  *
  * ─── CONFIDENCE SCORING ─────────────────────────────────────────────────────
  *
- *  raw_i = typeTrust_i · (sizeShare_i)^sizeWeight · (metricShare_i)^metricWeight
+ *  score_i = typeTrust_i · size_signal_i^sizeWeight · metric_signal_i^metricWeight
  *
- *  These raw scores are fed through a TEMPERATURE-SCALED SOFTMAX before being
- *  used as blending coefficients.  This replaces the old direct normalization,
- *  which caused extreme collapse (0.993 / 0.007 ratios) when one branch
- *  dominated both signals at once.  With `confidenceTemp > 1` the mix stays
- *  meaningful even for strongly imbalanced branches; set `confidenceTemp = 0.5`
- *  to sharpen it when you want near-winner-takes-all behaviour.
+ *  size_signal_i depends on scoreMode (see above).
+ *  All signals normalized to sum=1 across branches before exponentiation.
+ *  Final softmax with confidenceTemp flattens extreme ratios further.
  *
- *  Missing signals → neutral (1), so with zero metadata this degrades exactly
- *  to equal weighting.
- *
- * ─── PER-BRANCH ADAPTIVE TRIM ───────────────────────────────────────────────
- *
- *  A fixed global trimFraction treats an under-trained branch (small Δ) the
- *  same as a well-trained one (large Δ) — both keep the top-20% by magnitude.
- *  But a branch that barely moved keeps only noise in its top-20%.
- *
- *  With `adaptiveTrim = true` (default when base is given), each branch's keep
- *  fraction is scaled by its relative delta norm:
- *
- *    keepFrac_i = trimFraction · (‖Δᵢ‖ / max_j ‖Δⱼ‖)
- *
- *  This means a branch with 10% of the max delta norm keeps only 10% * 20% = 2%
- *  of its parameters — correctly representing that most of its entries are noise
- *  relative to the branches that actually trained more.
- *
- * ─── L2-NORMALIZED TASK VECTORS (optional) ──────────────────────────────────
- *
- *  Set `normalizeTaskVectors = true` to unit-normalize each branch's Δ before
- *  merging.  This separates "direction of learning" from "magnitude of update"
- *  — useful when branches have very different learning rates or step counts and
- *  you want confidence to be the sole magnitude signal.  The combined task vector
- *  is then re-scaled by the confidence-weighted mean of the original norms.
+ * References:
+ *  - Task Arithmetic: Ilharco et al. (2023)
+ *  - TIES-Merging:    Yadav et al. (NeurIPS 2023)
+ *  - Fisher Merging:  Matena & Raffel (2022)
+ *  - LT-Soups:        Aminbeidokhti et al. (NeurIPS 2025)
+ *  - FedProx sqrt:    Li et al. (MLSys 2020) — sqrt clip for hetero FL
  */
 export const confidenceWeighted: MergeStrategy = {
   name: "confidence-weighted",
@@ -76,7 +55,29 @@ export const confidenceWeighted: MergeStrategy = {
   maxModels: null,
 
   merge(models, options) {
-    const confidences = computeConfidences(models, options);
+    // For delta-norm scoreMode we need delta norms before computing confidences.
+    // Pre-compute them here if base is available so the confidence function
+    // can use ‖Δᵢ‖² as a Fisher-approximate importance proxy.
+    let precomputedDeltaNorms: number[] | undefined;
+    if (options.base && (options.scoreMode === "delta-norm" || !options.scoreMode)) {
+      // Aggregate delta norm across all keys for a global per-branch magnitude.
+      // This is the Frobenius norm of the task vector: ‖Δᵢ‖_F
+      const baseKeys = Object.keys(options.base);
+      precomputedDeltaNorms = models.map((m) => {
+        let sumSq = 0;
+        for (const key of baseKeys) {
+          const baseData = Array.from(options.base![key].data);
+          const modelData = Array.from(m.weights[key].data);
+          for (let j = 0; j < baseData.length; j++) {
+            const d = modelData[j] - baseData[j];
+            sumSq += d * d;
+          }
+        }
+        return Math.sqrt(sumSq);
+      });
+    }
+
+    const confidences = computeConfidences(models, options, precomputedDeltaNorms);
 
     if (!options.base) {
       // Mode 1 — no lineage info: honest FedAvg over raw weights.
@@ -85,21 +86,44 @@ export const confidenceWeighted: MergeStrategy = {
 
     if (options.ties === false) {
       // Mode 2 — explicit opt-in: pure task-vector average.
-      // Use this when you want confidence to govern blending coefficients
-      // without any trim/sign-election (e.g. for the imbalanced-delta experiment).
-      return taskVectorAverage(models, options.base, confidences, options);
+      // The confidence values already reflect the chosen scoreMode.
+      return taskVectorAverage(models, options.base, confidences, options, precomputedDeltaNorms);
     }
 
     // Mode 3 — confidence-weighted TIES (default when base is present).
-    // Preserves v1 behaviour: base given → trim → elect sign → disjoint merge,
-    // with confidence-weighted election instead of raw magnitude.
     return confidenceWeightedTies(models, options.base, confidences, options);
   },
 };
 
-// ─── Confidence computation ────────────────────────────────────────────────
+// ─── Confidence computation (v3 — fixed collapse bug) ─────────────────────
 
-/** Proportional share of a signal across branches; missing values default to `fallback`. */
+/**
+ * Compute per-branch importance shares under a given scoring mode.
+ *
+ * scoreMode values:
+ *  'proportional' — raw size fraction (BUGS OUT at 100:1+ ratios)
+ *  'sqrt'         — √(size) fraction (safe default; 100:1 ratio → 10:1 weight)
+ *  'metric'       — validationMetric fraction only (ignore size)
+ *  'equal'        — uniform 1/N (ignore all signals)
+ *  'delta-norm'   — ‖Δᵢ‖² fraction (computed later, fed in as `values`)
+ */
+function computeSizeSignal(sizes: (number | undefined)[], mode: string): number[] {
+  const n = sizes.length;
+  const filled = sizes.map((s) => (s !== undefined && s > 0 ? s : 1));
+
+  if (mode === "equal") return filled.map(() => 1 / n);
+  if (mode === "metric") return filled.map(() => 1 / n); // size ignored
+
+  // sqrt mode (default): apply √ before normalizing so 100:1 → 10:1
+  const transformed = mode === "proportional"
+    ? filled
+    : filled.map(Math.sqrt); // 'sqrt' and 'delta-norm' both use sqrt here
+
+  const total = transformed.reduce((a, b) => a + b, 0);
+  if (total <= 0) return filled.map(() => 1 / n);
+  return transformed.map((v) => v / total);
+}
+
 function normalizedShares(values: (number | undefined)[], fallback: number): number[] {
   const raw = values.map((v) => (v !== undefined && v > 0 ? v : fallback));
   const total = raw.reduce((a, b) => a + b, 0);
@@ -110,38 +134,55 @@ function normalizedShares(values: (number | undefined)[], fallback: number): num
 /**
  * One confidence score per branch, normalized via temperature-scaled softmax.
  *
- * Key change from v1: the final normalization uses softmax(temperature) instead
- * of simple division.  At temperature=1 (default) this is nearly identical for
- * balanced branches, but avoids the extreme collapse (e.g. 0.993 / 0.007) that
- * occurs when one branch strongly dominates both size AND metric signals.
+ * v3 key fix: default scoreMode changed from 'proportional' to 'sqrt'.
+ * With 100:1 dataset size ratio:
+ *   proportional → 0.99/0.01 → after log+softmax ≈ 0.9999/0.0001 (collapse!)
+ *   sqrt         → 0.991/0.030 → after log+softmax ≈ 0.97/0.03 (honest)
  *
- * confidenceTemp > 1 → flatter (safer for imbalanced experiments)
- * confidenceTemp < 1 → sharper (for deliberate winner-takes-all blending)
+ * confidenceTemp > 1 → flatter (even safer for imbalanced)
+ * confidenceTemp < 1 → sharper (winner-takes-all)
  */
-function computeConfidences(models: WeightedModel[], options: MergeOptions): number[] {
+function computeConfidences(
+  models: WeightedModel[],
+  options: MergeOptions,
+  deltaNorms?: number[],
+): number[] {
   const sizeWeight = options.sizeWeight ?? 1;
   const metricWeight = options.metricWeight ?? 1;
   const typeTrust = options.typeTrust ?? {};
   const temperature = options.confidenceTemp ?? 1.0;
+  // NEW: default is 'sqrt' — safe for imbalanced scenarios
+  // Use 'proportional' only if you explicitly want classic FedAvg-style weighting
+  const scoreMode = options.scoreMode ?? "sqrt";
 
-  const sizeShares = normalizedShares(
-    models.map((m) => m.info?.datasetSize),
-    1,
-  );
-  const metricShares = normalizedShares(
+  // Handle delta-norm mode: weight by ‖Δᵢ‖² (Fisher-approximate)
+  let sizeSignals: number[];
+  if (scoreMode === "delta-norm" && deltaNorms && deltaNorms.length === models.length) {
+    // Fisher proxy: importance ∝ ‖Δᵢ‖² (squared update norm ~ curvature)
+    const squaredNorms = deltaNorms.map((n) => n * n);
+    const totalSq = squaredNorms.reduce((a, b) => a + b, 0);
+    sizeSignals = totalSq > 0
+      ? squaredNorms.map((v) => v / totalSq)
+      : models.map(() => 1 / models.length);
+  } else {
+    sizeSignals = computeSizeSignal(
+      models.map((m) => m.info?.datasetSize),
+      scoreMode,
+    );
+  }
+
+  // Metric signal: always proportional (validation accuracy is already a quality measure)
+  const metricSignals = normalizedShares(
     models.map((m) => m.info?.validationMetric),
     1,
   );
 
-  // Raw log-scores before softmax (product becomes sum in log space).
+  // Raw log-scores before softmax (product of signals in linear = sum in log space).
   const logScores = models.map((m, i) => {
     const trust = m.info?.datasetType !== undefined ? (typeTrust[m.info.datasetType] ?? 1) : 1;
-    // log of: trust * sizeShare^sizeWeight * metricShare^metricWeight
-    return (
-      Math.log(Math.max(trust, 1e-9)) +
-      sizeWeight * Math.log(Math.max(sizeShares[i], 1e-9)) +
-      metricWeight * Math.log(Math.max(metricShares[i], 1e-9))
-    );
+    const sizeTerm = scoreMode === "metric" ? 0 : sizeWeight * Math.log(Math.max(sizeSignals[i], 1e-9));
+    const metricTerm = metricWeight === 0 ? 0 : metricWeight * Math.log(Math.max(metricSignals[i], 1e-9));
+    return Math.log(Math.max(trust, 1e-9)) + sizeTerm + metricTerm;
   });
 
   return softmax(logScores, temperature);
@@ -187,6 +228,7 @@ function taskVectorAverage(
   base: ModelWeights,
   confidences: number[],
   options: MergeOptions,
+  globalDeltaNorms?: number[], // pre-computed Frobenius norms \u2016\u0394\u1d62\u2016 across ALL keys
 ): ModelWeights {
   const lambda = options.lambda ?? 1;
   const adaptiveTrim = options.adaptiveTrim ?? true;

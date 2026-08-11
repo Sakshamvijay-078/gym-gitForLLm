@@ -64,6 +64,7 @@ ${color.bold("Usage")}
                                                    [--size-weight <n>] [--metric-weight <n>] [--type-trust '{"type":n}']  (confidence-weighted)
                                                    [--ties false]  opt into pure task-vector average (no TIES sign-election)
                                                    [--confidence-temp <n>]  softmax temperature for confidence normalization (default 1.0)
+                                                   [--score-mode proportional|sqrt|metric|equal|delta-norm]  how size → confidence (default: sqrt)
   gym status                                      show current store + refs
   gym strategies                                  list available merge strategies
   gym formats                                     list available model codecs
@@ -265,9 +266,12 @@ async function cmdMerge(positional: string[], flags: Record<string, string>) {
     metricWeight: flags["metric-weight"] !== undefined ? Number(flags["metric-weight"]) : undefined,
     typeTrust: flags["type-trust"] !== undefined ? JSON.parse(flags["type-trust"]) : undefined,
     // --ties false → route confidence-weighted to Mode 2 (task-vector average, no sign election).
-    // Only set when the flag is explicitly provided; undefined preserves the default (TIES when base present).
     ties: flags["ties"] !== undefined ? flags["ties"] !== "false" : undefined,
     confidenceTemp: flags["confidence-temp"] !== undefined ? Number(flags["confidence-temp"]) : undefined,
+    // --score-mode controls how dataset size becomes a confidence signal.
+    // Default 'sqrt' is safe for imbalanced (100:1 → 10:1 weight ratio).
+    // 'proportional' is the old v2 default that caused confidence collapse.
+    scoreMode: flags["score-mode"] as "proportional" | "sqrt" | "metric" | "equal" | "delta-norm" | undefined,
   };
 
   const mergedWeights = strategy.merge([modelA, modelB], options);

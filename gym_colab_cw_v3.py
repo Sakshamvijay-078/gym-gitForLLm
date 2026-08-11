@@ -259,13 +259,14 @@ def run_merge_set(hash_x, hash_y, label_suffix):
         # at EVERY parameter → branch B's learned 5-9 signal is erased.
         ("confidence-weighted", ["--base", "auto", "--trim", "0.5", "--lambda", "1"], "cw-ties"),
 
-        # Mode 2: confidence-weighted TASK-VECTOR average  ← THE FIX
-        # merged = root + lambda * sum(confidence_i * delta_i)
-        # No sign-election: each branch contributes its full delta vector,
-        # scaled by confidence. A starved branch has BOTH tiny delta AND
-        # low confidence. Its 5-9 signal is preserved (tiny but non-zero).
-        # Formula: merged = root + 1.0*(0.99*Δ_A + 0.01*Δ_B_starved)
-        ("confidence-weighted", ["--base", "auto", "--ties", "false", "--lambda", "1"], "cw-tv"),
+        # Mode 2a: confidence-weighted TASK-VECTOR average with default 'sqrt' score-mode (FedProx scaling)
+        ("confidence-weighted", ["--base", "auto", "--ties", "false", "--lambda", "1", "--score-mode", "sqrt"], "cw-tv-sqrt"),
+
+        # Mode 2b: confidence-weighted TASK-VECTOR average with 'equal' weighting (1/N task-arithmetic baseline)
+        ("confidence-weighted", ["--base", "auto", "--ties", "false", "--lambda", "1", "--score-mode", "equal"], "cw-tv-equal"),
+
+        # Mode 2c: Fisher-approximate TASK-VECTOR average using delta-norm^2 parameter importance
+        ("confidence-weighted", ["--base", "auto", "--ties", "false", "--lambda", "1", "--score-mode", "delta-norm"], "cw-tv-fisher"),
     ]
     files = {}
     for strategy, extra, mode in runs:
