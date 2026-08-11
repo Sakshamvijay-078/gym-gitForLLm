@@ -50,9 +50,10 @@ export interface MergeOptions {
    */
   confidenceTemp?: number;
   /**
-   * When true (default), use confidence-weighted TIES (trim → elect sign →
-   * disjoint merge) as the merge kernel instead of a plain task-vector average.
-   * Only relevant when `base` is provided.
+   * When `false`, use a plain confidence-weighted task-vector average instead
+   * of TIES.  Default `true` (TIES when base is present) — set to `false`
+   * for the imbalanced-delta experiment where you want pure weighted-Δ blending
+   * without trim/sign-election.
    */
   ties?: boolean;
   /**

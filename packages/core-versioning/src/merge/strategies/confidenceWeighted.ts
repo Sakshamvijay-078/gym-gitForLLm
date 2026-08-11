@@ -83,12 +83,16 @@ export const confidenceWeighted: MergeStrategy = {
       return rawWeightedAverage(models, confidences);
     }
 
-    if (!options.ties) {
-      // Mode 2 — task-vector average (THE main fix for imbalanced branches).
+    if (options.ties === false) {
+      // Mode 2 — explicit opt-in: pure task-vector average.
+      // Use this when you want confidence to govern blending coefficients
+      // without any trim/sign-election (e.g. for the imbalanced-delta experiment).
       return taskVectorAverage(models, options.base, confidences, options);
     }
 
-    // Mode 3 — confidence-weighted TIES.
+    // Mode 3 — confidence-weighted TIES (default when base is present).
+    // Preserves v1 behaviour: base given → trim → elect sign → disjoint merge,
+    // with confidence-weighted election instead of raw magnitude.
     return confidenceWeightedTies(models, options.base, confidences, options);
   },
 };
@@ -252,7 +256,10 @@ function confidenceWeightedTies(
 ): ModelWeights {
   const lambda = options.lambda ?? 1;
   const trimFraction = options.trimFraction ?? 0.2;
-  const adaptiveTrim = options.adaptiveTrim ?? true;
+  // In TIES mode, trimFraction is an explicit algorithmic parameter from the paper
+  // (keep top-k% by magnitude) — not a scale factor.  Adaptive trim is opt-in here,
+  // not the default, so user-supplied trimFraction values mean exactly what they say.
+  const adaptiveTrim = options.adaptiveTrim ?? false;
 
   assertCompatible([base, ...models.map((m) => m.weights)]);
 
