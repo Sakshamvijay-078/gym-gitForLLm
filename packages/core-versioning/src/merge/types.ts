@@ -42,6 +42,33 @@ export interface MergeOptions {
   metricWeight?: number;
   /** Manual trust multiplier per datasetType label, e.g. {"clean-labels": 2, "noisy-scrape": 0.5}. Missing types default to 1 (neutral). */
   typeTrust?: Record<string, number>;
+  /**
+   * Softmax temperature applied to the raw confidence log-scores before
+   * normalization.  > 1 flattens the distribution toward uniform (safer
+   * for imbalanced experiments); < 1 sharpens it toward winner-takes-all.
+   * Default 1.0 (equivalent to direct softmax; replaces the old hard normalize).
+   */
+  confidenceTemp?: number;
+  /**
+   * When true (default), use confidence-weighted TIES (trim → elect sign →
+   * disjoint merge) as the merge kernel instead of a plain task-vector average.
+   * Only relevant when `base` is provided.
+   */
+  ties?: boolean;
+  /**
+   * When true (default when base is given), scale each branch's keep fraction
+   * by its relative delta norm so barely-trained branches are trimmed more
+   * aggressively than well-trained ones.
+   */
+  adaptiveTrim?: boolean;
+  /**
+   * When true, unit-normalize each branch's task vector before blending, then
+   * re-scale by the confidence-weighted mean of the original norms.  This
+   * separates learning direction from magnitude, so confidence scores alone
+   * govern how much each branch contributes.  Default false.
+   */
+  normalizeTaskVectors?: boolean;
+
 }
 
 export interface MergeStrategy {
