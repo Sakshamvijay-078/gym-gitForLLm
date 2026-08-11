@@ -38,12 +38,37 @@ def load_model(path: str) -> TinyMLP:
     return model
 
 
-def train_briefly(model: nn.Module, x: torch.Tensor, y: torch.Tensor, steps: int = 200):
+def train_briefly(model: nn.Module, x: torch.Tensor, y: torch.Tensor, classes=None, steps: int = 200):
+    """
+    If `classes` is given, the loss is MASKED to only those classes: the
+    softmax is restricted to `classes` and `y` is remapped into that local
+    index space before computing cross-entropy.
+
+    Why this matters: a branch that only ever sees a subset of classes but
+    is trained with a plain full-width CrossEntropyLoss doesn't just learn
+    its own classes -- it actively pushes every OTHER class's logit down at
+    every step, since softmax normalizes over all outputs. Over enough steps
+    that suppresses the classes this branch has never seen. When you later
+    merge that branch back in, even a heavily confidence-weighted partner
+    branch can't out-vote an actively suppressed output unit, and the merge
+    result silently loses that partner's classes (this was the root cause of
+    a 0% accuracy bug on the held-out classes in earlier versions of the
+    Split-MNIST test notebook -- see the notebook's markdown header). Masking
+    the loss means a branch's gradient never touches classes it has no data
+    for, so it can't suppress them.
+    """
     opt = torch.optim.Adam(model.parameters(), lr=1e-3)
     loss_fn = nn.CrossEntropyLoss()
+    classes_t = torch.tensor(sorted(classes)) if classes is not None else None
     for _ in range(steps):
         opt.zero_grad()
-        loss = loss_fn(model(x), y)
+        logits = model(x)
+        if classes_t is not None:
+            logits = logits[:, classes_t]
+            y_step = torch.searchsorted(classes_t, y)
+        else:
+            y_step = y
+        loss = loss_fn(logits, y_step)
         loss.backward()
         opt.step()
     return model
@@ -59,7 +84,7 @@ if __name__ == "__main__":
     y_a = torch.randint(0, 5, (256,))  # pretend this shard only has classes 0-4
     branch_a = TinyMLP()
     branch_a.load_state_dict(root.state_dict())
-    train_briefly(branch_a, x_a, y_a)
+    train_briefly(branch_a, x_a, y_a, classes=[0, 1, 2, 3, 4])
     save_model(branch_a, "branch_a.safetensors")
 
     # --- Step 3: fine-tune the SAME root on synthetic "shard B" (classes 5-9) ---
@@ -67,7 +92,7 @@ if __name__ == "__main__":
     y_b = torch.randint(5, 10, (256,))
     branch_b = TinyMLP()
     branch_b.load_state_dict(root.state_dict())
-    train_briefly(branch_b, x_b, y_b)
+    train_briefly(branch_b, x_b, y_b, classes=[5, 6, 7, 8, 9])
     save_model(branch_b, "branch_b.safetensors")
 
     print("\nNow run these through the gym CLI:")

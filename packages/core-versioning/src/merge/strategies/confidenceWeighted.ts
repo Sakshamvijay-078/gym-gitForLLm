@@ -228,13 +228,12 @@ function taskVectorAverage(
   base: ModelWeights,
   confidences: number[],
   options: MergeOptions,
-  globalDeltaNorms?: number[],
+  globalDeltaNorms?: number[], // pre-computed Frobenius norms \u2016\u0394\u1d62\u2016 across ALL keys
 ): ModelWeights {
   const lambda = options.lambda ?? 1;
   const adaptiveTrim = options.adaptiveTrim ?? true;
-  const trimFraction = options.trimFraction ?? 0;
+  const trimFraction = options.trimFraction ?? 0; // 0 = no trim by default for this mode
   const normalize = options.normalizeTaskVectors ?? false;
-  const normEqualizeAlpha = options.normEqualizePower ?? (options.scoreMode === "norm-equalized" ? 0.6 : 0);
 
   assertCompatible([base, ...models.map((m) => m.weights)]);
 
@@ -245,26 +244,17 @@ function taskVectorAverage(
     const baseVec = Array.from(base[key].data);
     const taskVectors = models.map((m) => sub(Array.from(m.weights[key].data), baseVec));
 
+    // Per-branch delta norms (needed for adaptive trim and normalization).
     const deltaNorms = taskVectors.map((tv) => norm(tv));
     const maxNorm = Math.max(...deltaNorms, 1e-12);
-    const meanNorm = deltaNorms.reduce((a, b) => a + b, 0) / deltaNorms.length;
 
     let processedVectors = taskVectors;
-
-    if (normEqualizeAlpha > 0 && meanNorm > 0) {
-      processedVectors = processedVectors.map((tv, i) => {
-        const n = deltaNorms[i];
-        if (n <= 1e-12) return tv;
-        const scaleFactor = Math.pow(meanNorm / n, normEqualizeAlpha);
-        return scale(tv, scaleFactor);
-      });
-    }
 
     // Optional: unit-normalize each task vector so confidence is the only
     // magnitude signal.  Re-scale the result by the confidence-weighted norm.
     if (normalize) {
       const normalizedNorm = confidences.reduce((s, c, i) => s + c * deltaNorms[i], 0);
-      processedVectors = processedVectors.map((tv, i) => {
+      processedVectors = taskVectors.map((tv, i) => {
         const n = deltaNorms[i];
         return n > 1e-12 ? scale(tv, normalizedNorm / n) : tv;
       });

@@ -158,27 +158,6 @@ function main() {
     "with equal confidence (50/50 dataset sizes), confidence-weighted ties matches plain ties exactly",
   );
 
-  // --- Norm-equalized mode: rescales small task vectors to prevent magnitude collapse ---
-  const normBase = baseWeights({ w: [0, 0] });
-  const largeDelta = model("large", { w: [10, 10] }, { datasetSize: 30000 }); // norm = sqrt(200) = 14.14
-  const smallDelta = model("small", { w: [1, 1] }, { datasetSize: 300 });   // norm = sqrt(2) = 1.41
-  // Without norm-equalization, 50/50 TV merge gives: base + 0.5*[10,10] + 0.5*[1,1] = [5.5, 5.5]
-  // With normEqualizePower=1.0: meanNorm = (14.14+1.41)/2 = 7.77
-  //   largeDelta gets scaled by 7.77/14.14 = 0.55 -> 0.55 * [10,10] = [5.5, 5.5]
-  //   smallDelta gets scaled by 7.77/1.41 = 5.5 -> 5.5 * [1,1] = [5.5, 5.5]
-  //   50/50 TV merge gives: 0.5*[5.5, 5.5] + 0.5*[5.5, 5.5] = [5.5, 5.5]
-  const normEqResult = confidenceWeighted.merge([largeDelta, smallDelta], {
-    base: normBase,
-    ties: false,
-    scoreMode: "norm-equalized",
-    normEqualizePower: 1.0,
-    metricWeight: 0,
-  });
-  assert(
-    approxEqual(normEqResult.w.data, [5.5, 5.5]),
-    "norm-equalized mode (power 1.0) equalizes task vector magnitudes so starved branch has equal energy in merge",
-  );
-
   // --- Shape/compatibility guard still applies ---
   let mismatchThrew = false;
   try {

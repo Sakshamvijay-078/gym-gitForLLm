@@ -96,22 +96,9 @@ export interface MergeOptions {
    *                   A branch that actually moved its weights more is weighted
    *                   more. Requires base. Falls back to 'equal' without base.
    *                   Ref: Matena & Raffel (2022) "Merging Models with Fisher..."
-   *
-   *  'norm-equalized' — rescales task vectors by (mean_norm / branch_norm)^alpha
-   *                   to compensate for magnitude collapse on starved/imbalanced
-   *                   branches. Prevents large-dataset branches from drowning
-   *                   out small-dataset branches in logit space.
    */
-  scoreMode?: "proportional" | "sqrt" | "metric" | "equal" | "delta-norm" | "norm-equalized";
+  scoreMode?: "proportional" | "sqrt" | "metric" | "equal" | "delta-norm";
 
-  /**
-   * Power exponent alpha in [0, 1] for inverse-norm task vector rescaling.
-   *  - 0.0: No norm scaling (raw task vectors)
-   *  - 0.5 - 0.6: Optimal balance for imbalanced dataset ratios (e.g. 100:1)
-   *  - 1.0: Full unit-norm equalization
-   * Default: 0.6 when scoreMode='norm-equalized', 0 otherwise.
-   */
-  normEqualizePower?: number;
 }
 
 export interface MergeStrategy {
