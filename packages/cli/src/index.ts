@@ -60,8 +60,10 @@ ${color.bold("Usage")}
   gym checkout <hash> --out <path>                pull a checkpoint's bytes back out
   gym merge <hashA> <hashB> --strategy <name> --node <id> --round <n> --out <path>
                                                   combine two branches into one
-                                                  [--base <hash>|auto] [--lambda <n>] [--trim <fraction>] [--t <fraction>] [--format <name>]
-                                                  [--size-weight <n>] [--metric-weight <n>] [--type-trust '{"type":n}']  (confidence-weighted)
+                                                   [--base <hash>|auto] [--lambda <n>] [--trim <fraction>] [--t <fraction>] [--format <name>]
+                                                   [--size-weight <n>] [--metric-weight <n>] [--type-trust '{"type":n}']  (confidence-weighted)
+                                                   [--ties false]  opt into pure task-vector average (no TIES sign-election)
+                                                   [--confidence-temp <n>]  softmax temperature for confidence normalization (default 1.0)
   gym status                                      show current store + refs
   gym strategies                                  list available merge strategies
   gym formats                                     list available model codecs
@@ -262,6 +264,10 @@ async function cmdMerge(positional: string[], flags: Record<string, string>) {
     sizeWeight: flags["size-weight"] !== undefined ? Number(flags["size-weight"]) : undefined,
     metricWeight: flags["metric-weight"] !== undefined ? Number(flags["metric-weight"]) : undefined,
     typeTrust: flags["type-trust"] !== undefined ? JSON.parse(flags["type-trust"]) : undefined,
+    // --ties false → route confidence-weighted to Mode 2 (task-vector average, no sign election).
+    // Only set when the flag is explicitly provided; undefined preserves the default (TIES when base present).
+    ties: flags["ties"] !== undefined ? flags["ties"] !== "false" : undefined,
+    confidenceTemp: flags["confidence-temp"] !== undefined ? Number(flags["confidence-temp"]) : undefined,
   };
 
   const mergedWeights = strategy.merge([modelA, modelB], options);
