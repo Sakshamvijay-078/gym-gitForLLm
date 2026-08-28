@@ -1,0 +1,60 @@
+version: "3.9"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DEV MODE OVERRIDE — for CPU-only machines (8GB RAM, no GPU)
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+#
+# What this overrides:
+#   • Removes all GPU requirements
+#   • Uses the local ToyMoE model (~20MB) instead of Mixtral-8x7B
+#   • Cuts dataset to 200 chunks, 20 local steps, batch=2
+#   • Reduces FL rounds to 3, min_clients to 1 (solo test possible)
+#   • Sets PEFT to CPU-compatible mode (no bitsandbytes 4-bit)
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+
+  redis:
+    # No change needed — redis:alpine already runs fine on CPU
+
+  orchestrator:
+    environment:
+      FL_ROUNDS:      3
+      FL_MIN_CLIENTS: 1          # Allow solo client testing
+    # No GPU override needed — orchestrator is already CPU-only
+
+  pipeline:
+    environment:
+      MODEL_NAME:       /models/toy_moe_model
+      DATASET_NAME:     wikitext
+      DATASET_CONFIG:   wikitext-2-raw-v1
+      MAX_CHUNKS:       200
+      BATCH_SIZE:       4
+      TOP_K:            2
+      PURITY_THRESHOLD: "0.0"
+      NO_4BIT:          "true"   # Disable bitsandbytes; use fp32 on CPU
+    volumes:
+      - ./toy_moe_model:/models/toy_moe_model:ro
+      - bucket_data:/data/buckets
+    # ── Remove GPU reservations ──
+    deploy:
+      resources: {}
+
+  client:
+    environment:
+      MODEL_NAME:       /models/toy_moe_model
+      COMPUTE_SCORE:    "0.5"
+      LOCAL_STEPS:      "20"     # 20 steps ≈ 2-4 min on U-series CPU
+      CHECKPOINT_EVERY: "5"
+      BATCH_SIZE:       "2"
+      LR:               "2e-4"
+      NO_4BIT:          "true"
+    volumes:
+      - ./toy_moe_model:/models/toy_moe_model:ro
+      - bucket_data:/data/buckets:ro
+      - checkpoint_data:/checkpoints
+    # ── Remove GPU reservations ──
+    deploy:
+      resources: {}

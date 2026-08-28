@@ -18,6 +18,7 @@ import io
 import json
 import logging
 import os
+import sys
 import time
 from pathlib import Path
 from typing import Optional
@@ -101,6 +102,21 @@ def _lora_target_modules(model: nn.Module, expert_indices: list[int]) -> list[st
     return list(targets)
 
 
+def _maybe_register_toy_moe(model_name: str) -> None:
+    """Auto-register ToyMoE if pointing at a local dev model."""
+    config_path = Path(model_name) / "config.json"
+    if config_path.exists():
+        import json as _json
+        cfg_data = _json.loads(config_path.read_text())
+        if cfg_data.get("model_type") == "toy_moe":
+            dev_dir = Path(__file__).parent / "dev"
+            if str(dev_dir) not in sys.path:
+                sys.path.insert(0, str(dev_dir))
+            from toy_moe import register_toy_moe
+            register_toy_moe()
+            log.info("Registered ToyMoE custom AutoClasses")
+
+
 def load_model_with_expert_lora(
     model_name: str,
     expert_indices: list[int],
@@ -108,25 +124,34 @@ def load_model_with_expert_lora(
     lora_alpha: Optional[int] = None,
 ) -> tuple[PeftModel, AutoTokenizer]:
     """
-    Load a 4-bit quantized base model and attach LoRA only to the layers
-    serving the expert_indices path. Everything else stays frozen.
+    Load a quantized base model and attach LoRA only to expert layers.
+    Automatically falls back to fp32 on CPU (no bitsandbytes required).
     """
-    log.info("Loading base model: %s", model_name)
+    use_4bit = (
+        torch.cuda.is_available()
+        and os.getenv("NO_4BIT", "").lower() != "true"
+    )
+    log.info("Loading base model: %s (4bit=%s)", model_name, use_4bit)
+    _maybe_register_toy_moe(model_name)
+
     bnb_cfg = BitsAndBytesConfig(
         load_in_4bit=True,
         bnb_4bit_quant_type="nf4",
         bnb_4bit_compute_dtype=torch.bfloat16,
         bnb_4bit_use_double_quant=True,
-    )
+    ) if use_4bit else None
+
     base_model = AutoModelForCausalLM.from_pretrained(
         model_name,
         quantization_config=bnb_cfg,
-        device_map="auto",
+        device_map="auto" if use_4bit else "cpu",
+        torch_dtype=torch.float32 if not use_4bit else None,
         trust_remote_code=True,
     )
-    base_model = prepare_model_for_kbit_training(base_model)
+    if use_4bit:
+        base_model = prepare_model_for_kbit_training(base_model)
 
-    tok = AutoTokenizer.from_pretrained(model_name, use_fast=True)
+    tok = AutoTokenizer.from_pretrained(model_name, use_fast=True, trust_remote_code=True)
     tok.pad_token = tok.eos_token
 
     target_modules = _lora_target_modules(base_model, expert_indices)

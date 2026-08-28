@@ -11,15 +11,17 @@ Pipeline:
   6. Rank + preferentially sample high-purity chunks inside each bucket.
   7. Serialize buckets to disk as HuggingFace Arrow datasets.
 
+Dev / CPU mode:
+  Set NO_4BIT=true (env) or pass --no_4bit to disable bitsandbytes.
+  Use a local ToyMoE model path for testing on 8 GB RAM machines.
+
 Usage:
   python data_pipeline.py \
-      --model_name_or_path "mistralai/Mixtral-8x7B-Instruct-v0.1" \
-      --dataset_name "HuggingFaceH4/ultrachat_200k" \
+      --model_name_or_path ./toy_moe_model \
+      --dataset_name wikitext \
+      --dataset_config wikitext-2-raw-v1 \
       --output_dir ./buckets \
-      --top_k 2 \
-      --purity_threshold 0.80 \
-      --max_chunks 100000 \
-      --batch_size 32
+      --top_k 2 --max_chunks 200 --batch_size 4 --no_4bit
 """
 
 from __future__ import annotations
@@ -33,6 +35,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterator
 
+import os
+import sys
 import numpy as np
 import torch
 from datasets import Dataset, DatasetDict, load_dataset
@@ -138,13 +142,39 @@ class RouterCapture:
 # Core Pipeline
 # ──────────────────────────────────────────────────────────────────────────────
 
+def _maybe_register_toy_moe(model_name: str) -> None:
+    """Auto-register ToyMoE custom classes when loading a local dev model."""
+    config_path = Path(model_name) / "config.json"
+    if config_path.exists():
+        import json
+        cfg_data = json.loads(config_path.read_text())
+        if cfg_data.get("model_type") == "toy_moe":
+            dev_dir = Path(__file__).parent / "dev"
+            if str(dev_dir) not in sys.path:
+                sys.path.insert(0, str(dev_dir))
+            from toy_moe import register_toy_moe
+            register_toy_moe()
+            log.info("Registered ToyMoE custom AutoClasses")
+
+
 def load_frozen_model(
     model_name: str,
     use_4bit: bool = True,
     device: str = "auto",
 ) -> tuple[AutoModelForCausalLM, AutoTokenizer]:
-    """Load a quantized, frozen model for routing-only inference."""
-    tok = AutoTokenizer.from_pretrained(model_name, use_fast=True)
+    """Load a quantized, frozen model for routing-only inference.
+
+    use_4bit is automatically forced to False on CPU-only machines
+    (bitsandbytes requires CUDA).
+    """
+    # Auto-disable 4-bit when no GPU is available or NO_4BIT env is set
+    if use_4bit and (not torch.cuda.is_available() or os.getenv("NO_4BIT", "").lower() == "true"):
+        log.warning("No CUDA GPU detected or NO_4BIT=true — disabling 4-bit quantization")
+        use_4bit = False
+        device = "cpu"
+
+    _maybe_register_toy_moe(model_name)
+    tok = AutoTokenizer.from_pretrained(model_name, use_fast=True, trust_remote_code=True)
     tok.pad_token = tok.eos_token
 
     bnb_cfg = BitsAndBytesConfig(
@@ -158,13 +188,13 @@ def load_frozen_model(
         model_name,
         quantization_config=bnb_cfg,
         device_map=device,
-        torch_dtype=torch.bfloat16 if not use_4bit else None,
+        torch_dtype=torch.float32 if not use_4bit else None,
         trust_remote_code=True,
     )
     model.eval()
     for p in model.parameters():
         p.requires_grad_(False)
-    log.info("Loaded frozen model: %s", model_name)
+    log.info("Loaded frozen model: %s (4bit=%s, device=%s)", model_name, use_4bit, device)
     return model, tok
 
 
@@ -173,15 +203,19 @@ def _stream_chunks(
     split: str,
     text_col: str,
     max_chunks: int,
+    dataset_config: Optional[str] = None,
 ) -> Iterator[str]:
     """Yield raw text strings from a HuggingFace dataset."""
-    ds = load_dataset(dataset_name, split=split, streaming=True)
+    load_kwargs: dict = dict(split=split, streaming=True)
+    if dataset_config:
+        load_kwargs["name"] = dataset_config
+    ds = load_dataset(dataset_name, **load_kwargs)
     count = 0
     for sample in ds:
         text = sample.get(text_col) or sample.get("text") or sample.get("content", "")
         if isinstance(text, list):
             text = " ".join(str(t) for t in text)
-        if text and isinstance(text, str):
+        if text and isinstance(text, str) and len(text.strip()) > 20:
             yield text.strip()
             count += 1
             if count >= max_chunks:
@@ -224,8 +258,9 @@ def build_buckets(
     max_chunks: int = 50_000,
     batch_size: int = 32,
     split: str = "train",
-    text_col: str = "prompt",
+    text_col: str = "text",
     use_4bit: bool = True,
+    dataset_config: Optional[str] = None,
 ) -> dict[tuple[int, ...], ExpertBucket]:
     """
     Main pipeline entry point. Returns a dict of {expert_path: ExpertBucket}.
@@ -239,7 +274,7 @@ def build_buckets(
     router.attach(model)
 
     buckets: dict[tuple[int, ...], ExpertBucket] = defaultdict(ExpertBucket)
-    text_iter = _stream_chunks(dataset_name, split, text_col, max_chunks)
+    text_iter = _stream_chunks(dataset_name, split, text_col, max_chunks, dataset_config)
 
     batch: list[str] = []
     processed = 0
@@ -316,6 +351,8 @@ def _parse() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="MoE-aware data bucketing pipeline")
     p.add_argument("--model_name_or_path", required=True)
     p.add_argument("--dataset_name",       required=True)
+    p.add_argument("--dataset_config",     default=None,
+                   help="HuggingFace dataset config name (e.g. wikitext-2-raw-v1)")
     p.add_argument("--output_dir",         default="./buckets")
     p.add_argument("--top_k",              type=int,   default=2)
     p.add_argument("--purity_threshold",   type=float, default=0.0,
@@ -323,16 +360,20 @@ def _parse() -> argparse.Namespace:
     p.add_argument("--max_chunks",         type=int,   default=50_000)
     p.add_argument("--batch_size",         type=int,   default=32)
     p.add_argument("--split",              default="train")
-    p.add_argument("--text_col",           default="prompt")
-    p.add_argument("--no_4bit",            action="store_true")
+    p.add_argument("--text_col",           default="text")
+    p.add_argument("--no_4bit",            action="store_true",
+                   help="Force fp32, skip bitsandbytes (required on CPU)")
     return p.parse_args()
 
 
 if __name__ == "__main__":
     args = _parse()
+    # Also honour NO_4BIT env variable for Docker-compose dev mode
+    force_no_4bit = args.no_4bit or os.getenv("NO_4BIT", "").lower() == "true"
     build_buckets(
         model_name=args.model_name_or_path,
         dataset_name=args.dataset_name,
+        dataset_config=args.dataset_config,
         output_dir=Path(args.output_dir),
         top_k=args.top_k,
         purity_threshold=args.purity_threshold,
@@ -340,5 +381,5 @@ if __name__ == "__main__":
         batch_size=args.batch_size,
         split=args.split,
         text_col=args.text_col,
-        use_4bit=not args.no_4bit,
+        use_4bit=not force_no_4bit,
     )
