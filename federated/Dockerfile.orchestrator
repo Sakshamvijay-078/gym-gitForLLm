@@ -1,0 +1,18 @@
+# ── Orchestrator Image ─────────────────────────────────────────────────────
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# System deps
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl gcc g++ git && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY redis_state.py orchestrator.py custom_strategy.py data_pipeline.py ./
+
+EXPOSE 8000 8080
+
+CMD ["python", "orchestrator.py"]

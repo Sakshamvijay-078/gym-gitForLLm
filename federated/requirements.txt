@@ -1,0 +1,8 @@
+# ── CPU-only requirements (orchestrator image) ─────────────────────────────
+flwr>=1.8.0
+fastapi>=0.111.0
+uvicorn[standard]>=0.30.0
+redis>=5.0.0
+pydantic>=2.0.0
+numpy>=1.26.0
+requests>=2.31.0

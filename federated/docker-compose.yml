@@ -1,0 +1,124 @@
+version: "3.9"
+
+# ─────────────────────────────────────────────────────────────────
+# Decentralized Federated Fine-Tuning of MoE LLMs — Phase 1
+# ─────────────────────────────────────────────────────────────────
+# Services:
+#   redis        — State store + task queues
+#   orchestrator — FastAPI + Flower gRPC server
+#   pipeline     — One-shot data bucketing job (exits after completion)
+#   client       — Template Flower client node (scale with --scale or
+#                  override EXPERT_INDICES / NODE_ID per instance)
+# ─────────────────────────────────────────────────────────────────
+
+services:
+
+  # ── Redis ──────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ── Orchestrator (FastAPI + Flower server) ──────────────────────
+  orchestrator:
+    build:
+      context: .
+      dockerfile: Dockerfile.orchestrator
+    restart: unless-stopped
+    ports:
+      - "8000:8000"   # FastAPI REST
+      - "8080:8080"   # Flower gRPC
+    environment:
+      REDIS_HOST:          redis
+      REDIS_PORT:          6379
+      FLOWER_PORT:         8080
+      API_PORT:            8000
+      BUCKET_DIR:          /data/buckets
+      FL_ROUNDS:           10
+      FL_MIN_CLIENTS:      2
+      WATCHDOG_INTERVAL_S: 15
+    volumes:
+      - bucket_data:/data/buckets:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Data Pipeline (one-shot, exits when done) ───────────────────
+  pipeline:
+    build:
+      context: .
+      dockerfile: Dockerfile.pipeline
+    profiles: ["pipeline"]    # Only runs with: docker compose --profile pipeline up pipeline
+    environment:
+      MODEL_NAME:        ${MODEL_NAME:-mistralai/Mixtral-8x7B-Instruct-v0.1}
+      DATASET_NAME:      ${DATASET_NAME:-HuggingFaceH4/ultrachat_200k}
+      OUTPUT_DIR:        /data/buckets
+      TOP_K:             ${TOP_K:-2}
+      PURITY_THRESHOLD:  ${PURITY_THRESHOLD:-0.0}
+      MAX_CHUNKS:        ${MAX_CHUNKS:-50000}
+      BATCH_SIZE:        ${BATCH_SIZE:-32}
+      HF_TOKEN:          ${HF_TOKEN:-}
+    volumes:
+      - bucket_data:/data/buckets
+      - hf_cache:/root/.cache/huggingface
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  # ── Client Node (replicate / override env for each worker) ─────
+  client:
+    build:
+      context: .
+      dockerfile: Dockerfile.client
+    restart: on-failure
+    environment:
+      SERVER_ADDRESS:    orchestrator:8080
+      MODEL_NAME:        ${MODEL_NAME:-mistralai/Mixtral-8x7B-Instruct-v0.1}
+      EXPERT_INDICES:    ${EXPERT_INDICES:-0 1}
+      COMPUTE_SCORE:     ${COMPUTE_SCORE:-0.5}
+      LOCAL_STEPS:       ${LOCAL_STEPS:-200}
+      CHECKPOINT_EVERY:  ${CHECKPOINT_EVERY:-50}
+      BATCH_SIZE:        ${BATCH_SIZE:-4}
+      LR:                ${LR:-2e-4}
+      NODE_ID:           ${NODE_ID:-node_default}
+      HEARTBEAT_URL:     http://orchestrator:8000/heartbeat
+      BUCKET_DIR:        /data/buckets
+      HF_TOKEN:          ${HF_TOKEN:-}
+    volumes:
+      - bucket_data:/data/buckets:ro
+      - hf_cache:/root/.cache/huggingface
+      - checkpoint_data:/checkpoints
+    depends_on:
+      orchestrator:
+        condition: service_healthy
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+volumes:
+  redis_data:
+  bucket_data:
+  hf_cache:
+  checkpoint_data:

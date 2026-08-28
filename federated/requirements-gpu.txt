@@ -1,0 +1,24 @@
+# ── GPU requirements (pipeline + client images) ───────────────────────────
+# Install torch with CUDA 12.1 support first (index URL required)
+# pip install -r requirements-gpu.txt --extra-index-url https://download.pytorch.org/whl/cu121
+
+torch>=2.2.0
+torchvision>=0.17.0
+
+# HuggingFace ecosystem
+transformers>=4.40.0
+datasets>=2.19.0
+peft>=0.10.0
+accelerate>=0.29.0
+bitsandbytes>=0.43.0
+safetensors>=0.4.3
+tokenizers>=0.19.0
+
+# Flower
+flwr>=1.8.0
+
+# Utilities
+numpy>=1.26.0
+scipy>=1.13.0
+requests>=2.31.0
+tqdm>=4.66.0
