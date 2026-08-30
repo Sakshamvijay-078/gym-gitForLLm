@@ -174,7 +174,7 @@ def load_frozen_model(
         device = "cpu"
 
     _maybe_register_toy_moe(model_name)
-    tok = AutoTokenizer.from_pretrained(model_name, use_fast=True, trust_remote_code=True)
+    tok = AutoTokenizer.from_pretrained(model_name, use_fast=False, trust_remote_code=True)
     tok.pad_token = tok.eos_token
 
     bnb_cfg = BitsAndBytesConfig(

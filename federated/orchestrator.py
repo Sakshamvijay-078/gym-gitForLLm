@@ -16,10 +16,18 @@ The Flower gRPC server runs on its own thread alongside FastAPI.
 
 from __future__ import annotations
 
+import signal
+import threading
+_original_signal = signal.signal
+def _patched_signal(signum, handler):
+    if threading.current_thread() is threading.main_thread():
+        return _original_signal(signum, handler)
+    return None
+signal.signal = _patched_signal
+
 import asyncio
 import logging
 import os
-import threading
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -57,6 +65,7 @@ BUCKET_DIR         = Path(os.getenv("BUCKET_DIR", "/data/buckets"))
 WATCHDOG_INTERVAL  = int(os.getenv("WATCHDOG_INTERVAL_S", 15))
 FL_ROUNDS          = int(os.getenv("FL_ROUNDS", 10))
 FL_MIN_CLIENTS     = int(os.getenv("FL_MIN_CLIENTS", 2))
+ROLLBACK_THRESHOLD = float(os.getenv("ROLLBACK_THRESHOLD", 0.5))
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Global state (initialized in lifespan)
@@ -104,8 +113,16 @@ def _populate_tasks_from_manifest():
         log.warning("No bucket manifest found; no tasks seeded")
         return
     for path_str, info in manifest.items():
+        # IMPORTANT: task_id must be deterministic per bucket. It previously
+        # included a random uuid suffix, which meant enqueue_task()'s
+        # idempotency check (`if self.r.exists(key): return`) could never
+        # find a match on restart - every orchestrator restart re-seeded ALL
+        # buckets as brand-new duplicate tasks, even ones already completed,
+        # so the pending queue only ever grew across dev runs. A deterministic
+        # id keyed on the bucket path lets Redis correctly recognize "this
+        # bucket already has a task" (pending, assigned, or done) and skip it.
         task = TaskInfo(
-            task_id     = f"task_{path_str}_{uuid.uuid4().hex[:8]}",
+            task_id     = f"task_{path_str}",
             bucket_path = info["path"],
             bucket_size = info["num_chunks"],
         )
@@ -130,6 +147,7 @@ async def lifespan(app: FastAPI):
         global_rank            = 16,
         regression_penalty_coeff = 0.3,
         rollback_on_regression = True,
+        rollback_threshold     = ROLLBACK_THRESHOLD,
         val_buffer             = val_buffer,
     )
 

@@ -179,7 +179,7 @@ Clients submit LoRA adapters at their compute-appropriate rank (4–32). The ser
 reward = normalised_loss_improvement − regression_penalty
 weight = confidenceFloor + (1 − confidenceFloor) × sigmoid(reward)
 ```
-Updates with `reward < threshold` are rejected. If the merged global model degrades on the validation buffer by >5%, the orchestrator rolls back to the last known-good parameters.
+Updates with `reward < threshold` are rejected. Reward is currently the client's own held-out loss improvement for that round — cross-path regression penalties described in earlier drafts require a server-side validation set the orchestrator doesn't yet hold, and are not implemented (`ValidationBuffer` is a Phase 2 stub). Separately, if a merged update moves the canonical LoRA weights by more than `ROLLBACK_THRESHOLD` (default 50%) in relative L2 norm versus the last accepted checkpoint, the orchestrator rolls back — this is a parameter-drift instability guard, not a validation-loss check.
 
 ### DiLoCo Local Training (`client_node.py`)
 Nodes run 200 local SGD steps before communicating (vs. FedAvg's 1 step). Local checkpoints are saved every 50 steps — on restart, training resumes from the latest checkpoint without losing progress.

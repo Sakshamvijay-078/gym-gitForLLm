@@ -52,10 +52,11 @@ class NodeInfo:
     current_task:  Optional[str] = None
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        return {k: ("" if v is None else v) for k, v in asdict(self).items()}
 
     @classmethod
     def from_dict(cls, d: dict) -> "NodeInfo":
+        d = {k: (None if v == "" else v) for k, v in d.items()}
         return cls(**{k: v for k, v in d.items() if k in cls.__dataclass_fields__})
 
 
@@ -75,17 +76,18 @@ class TaskInfo:
     def to_dict(self) -> dict:
         d = asdict(self)
         d["bucket_path"] = json.dumps(self.bucket_path)
-        return d
+        return {k: ("" if v is None else v) for k, v in d.items()}
 
     @classmethod
     def from_dict(cls, d: dict) -> "TaskInfo":
         d = dict(d)
         if isinstance(d.get("bucket_path"), str):
             d["bucket_path"] = json.loads(d["bucket_path"])
-        if "retries" in d:
+        if "retries" in d and d["retries"] != "":
             d["retries"] = int(d["retries"])
-        if "bucket_size" in d:
+        if "bucket_size" in d and d["bucket_size"] != "":
             d["bucket_size"] = int(d["bucket_size"])
+        d = {k: (None if v == "" else v) for k, v in d.items()}
         return cls(**{k: v for k, v in d.items() if k in cls.__dataclass_fields__})
 
 
